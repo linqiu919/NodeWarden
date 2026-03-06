@@ -57,25 +57,39 @@
 
 **Deploy steps:**
 
-- **If you just want to try it quickly, you can simply click one of the deploy buttons in step 2.**
+> **If you only want a quick trial, simply click the one-click deploy button in step 2. The remaining steps are mainly for long-term maintenance.**
 
-1. Fork this repository, name it **NodeWarden**, and make sure **Copy the main branch only** is **unchecked**.
-2. Choose one deployment mode below, rename the project to **NodeWarden2**, and set **JWT_SECRET** to a random 32-character string.
-   - **R2**: requires a payment method; **single attachment/Send file limit is 100 MB** (project-level limit, editable in code); **10 GB free storage**.
+1. Fork this repository and name it **NodeWarden**.
+2. Click the button below. On the page that opens, rename the project to **NodeWarden2** and set **JWT_SECRET** to a random 32-character string.
 
-     [![Deploy (R2)](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/shuaiplus/NodeWarden)
-
-   - **KV**: no card required; **single attachment/Send file limit is 25 MiB** (Cloudflare platform limit, not editable); **1 GB free storage**.
-
-     [![Deploy (KV)](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/shuaiplus/NodeWarden/tree/kv)
+     [![Deploy](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/shuaiplus/NodeWarden)
 3. After deployment, open the Worker settings on the same page and disconnect the **Git repository**.
-4. Reconnect the **Git repository** to the fork from step 1. This branch selection must match the button you used: **R2 uses `main`, KV uses `kv`**.
+4. Reconnect the **Git repository** to the fork from step 1, then change the **Name** field at the bottom to **NodeWarden**.
 5. The temporary **NodeWarden2** repository can be deleted.
+
+<details>
+<summary><b>📦 If you do not have a payment method attached and cannot enable R2 object storage, you can use KV mode instead</b></summary>
+
+<br>
+
+>- **R2**: requires a payment method; **single attachment / Send file limit is 100 MB** (project-level limit, editable in code); **10 GB free storage**
+>- **KV**: no card required; **single attachment / Send file limit is 25 MiB** (Cloudflare limit, not editable); **1 GB free storage**
+>
+>1. Fork this repository and name it **NodeWarden**.
+>2. Open your GitHub repository, go to the `Actions` page, and run **Switch to KV mode** (this automatically switches [wrangler.toml](./wrangler.toml) to the KV configuration).
+>3. **In your own repository**, click the button below. On the page that opens, rename the project to **NodeWarden2** and set **JWT_SECRET** to a random 32-character string.
+>
+>    [![Deploy](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/shuaiplus/NodeWarden)
+>
+>4. After deployment, open the Worker settings on the same page and disconnect the **Git repository**.
+>5. Reconnect the **Git repository** to the fork from step 1, then change the **Name** field at the bottom to **NodeWarden**.
+>6. The GitHub repository **NodeWarden2** can be deleted.
+</details>
 
 > [!TIP] 
 > Sync upstream (keep your fork updated):
->- Manual: open your fork on GitHub and click **Sync fork** when prompted.
->- Automatic: in your fork, go to **Actions**, click **I understand my workflows, go ahead and enable them**. It will sync `main` from upstream, rebuild `kv` from `main`, and apply the KV `wrangler.toml` changes automatically every day at 3 AM.
+>- Manual: open your fork on GitHub and click `Sync fork` when prompted.
+>- Automatic: in your fork, go to `Actions`, click `I understand my workflows, go ahead and enable them`. Once enabled, `Sync upstream` will automatically sync the upstream `main` branch every day at 3 AM and keep your current [wrangler.toml](./wrangler.toml) configuration unchanged.
 
 ### CLI deploy 
 
@@ -99,7 +113,7 @@ npm run deploy
 
 # (Optional) KV mode (no R2 / no credit card)
 npx wrangler kv namespace create ATTACHMENTS_KV
-# Put returned namespace id into wrangler.kv.toml -> [[kv_namespaces]].id
+# Replace placeholder inside `id = "placeholder"` in wrangler.kv.toml with the returned namespace id (keep the quotes)
 npm run deploy:kv
 
 # To update later: re-clone and re-deploy — no need to recreate cloud resources

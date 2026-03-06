@@ -1,0 +1,80 @@
+name: Switch to KV mode
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Switch wrangler.toml to KV mode
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          path = Path("wrangler.toml")
+          text = path.read_text(encoding="utf-8")
+
+          pattern = (
+              r"\[\[r2_buckets\]\]\s*"
+              r'binding\s*=\s*"ATTACHMENTS"\s*'
+              r'bucket_name\s*=\s*"nodewarden-attachments"\s*'
+          )
+          replacement = (
+              '[[kv_namespaces]]\n'
+              'binding = "ATTACHMENTS_KV"\n'
+              'id = "placeholder"\n'
+          )
+
+          new_text, count = re.subn(pattern, replacement, text, count=1)
+          if count == 0 and 'binding = "ATTACHMENTS_KV"' not in text:
+              raise SystemExit("Expected R2 block not found in wrangler.toml")
+
+          if count > 0:
+              path.write_text(new_text, encoding="utf-8")
+          PY
+
+      - name: Update deploy button link in README files
+        env:
+          REPO_SLUG: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          repo_slug = os.environ["REPO_SLUG"]
+          deploy_url = f"https://deploy.workers.cloudflare.com/?url=https://github.com/{repo_slug}"
+
+          pattern = re.compile(
+              r'https://deploy\.workers\.cloudflare\.com/\?url=https://github\.com/[^)\s]+'
+          )
+
+          for file_name in ("README.md", "README_EN.md"):
+              path = Path(file_name)
+              text = path.read_text(encoding="utf-8")
+              new_text, count = pattern.subn(deploy_url, text, count=2)
+              if count > 0:
+                  path.write_text(new_text, encoding="utf-8")
+          PY
+
+      - name: Commit KV mode change
+        run: |
+          git add wrangler.toml README.md README_EN.md
+          git diff --cached --quiet && exit 0
+          git commit -m "chore: switch wrangler.toml to KV mode"
+          git push origin main

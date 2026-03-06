@@ -31,7 +31,7 @@ English：[`README_EN.md`](./README_EN.md)
 | 附件上传/下载 | ✅ | ✅ | Cloudflare R2 和 KV 二选一 |
 | 导入导出功能 | ✅ | ✅ | 完整实现，含 Bitwarden 密码库+附件 ZIP 导入 |
 | 网站图标代理 | ✅ | ✅ | 通过 `/icons/{hostname}/icon.png` |
-| passkey、TOTP字段 |  ✅ | ✅ |完全支持，无需高级版 |
+| passkey、TOTP 字段 | ✅ | ✅ | 完全支持，无需高级版 |
 | Send | ✅ | ✅ | Cloudflare R2 和 KV 二选一 |
 | 多用户 | ✅ | ✅ | 完整的用户管理，邀请机制 |
 | 组织/集合/成员权限 | ✅ | ❌ | 没必要实现 |
@@ -56,28 +56,42 @@ English：[`README_EN.md`](./README_EN.md)
 
 **部署步骤：**
 
-   >   **若你只是想体验一下，直接点击第二步一键部署按钮即可**，以下操作为了长期更新使用
+> **若你只是想快速体验，直接点击第 2 步的一键部署按钮即可；以下步骤主要为了后续长期更新。**
 
 
-1. 首先Fork本仓库，命名为**NodeWarden**，取消选择 Copy the main branch only
-2. 根据对储存库的需求，**二选一**点击下面的按钮，修改项目名称为**NodeWarden2**，修改**JWT_SECRET**成32为随机字符串；
-  - **R2**：需绑定银行卡；**单个附件/Send上限 100MB**（代码限制，可自行修改）；**总量 10GB 免费**
-  
+1. 先 Fork 本仓库，并命名为 **NodeWarden**。
+2. 点击下面的按钮，在打开的页面中将项目名称改为 **NodeWarden2**，并将 **JWT_SECRET** 设置为 32 位随机字符串。
+   
     [![Deploy (R2)](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/shuaiplus/NodeWarden)
   
-  - **KV**：无需绑卡；**单个附件/Send 文件上限 25 MiB**（cloudflare限制，不可修改）；**总量 1GB 免费**
+3. 部署完成后，在同一页面打开 Workers 设置，将 **Git 存储库** 断开连接。
+4. 在同一位置重新连接到第 1 步 Fork 的仓库，并在页面底部将 **名称** 改回 **NodeWarden**。
+5. GitHub 仓库 **NodeWarden2** 可以删除。
 
-    [![Deploy (KV)](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/shuaiplus/NodeWarden/tree/kv)
-3. 部署完成后，同一页面打开workers设置，将**Git存储库**断开连接
-4. 同一位置，**Git存储库**链接至第一步Fork的仓库（仓库名NodeWarden），**R2选择main分支，KV选择kv分支**（必须选对！！！）
-5. 仓库**NodeWarden2**可以删除
+<details>
+<summary><b>📦 若未绑定银行卡、无法启用 R2 对象存储，可改用 KV 模式</b></summary>
 
+<br>
 
+>- **R2**：需绑定银行卡；**单个附件 / Send 文件上限 100 MB**（代码限制，可自行修改）；**总量 10 GB 免费**
+>- **KV**：无需绑卡；**单个附件 / Send 文件上限 25 MiB**（Cloudflare 限制，不可修改）；**总量 1 GB 免费**
+>
+>1. 先 Fork 本仓库，并命名为 **NodeWarden**。
+>2. 打开 GitHub 仓库，进入 `Actions` 页面，运行 **Switch to KV mode**（自动将 [wrangler.toml](./wrangler.toml) 切换为 KV 配置。）
+>3. **在你自己的仓库中**点击下面的按钮，在打开的页面中将项目名称改为 **NodeWarden2**，并将 **JWT_SECRET** 设置为 32 位随机字符串。
+>
+>    [![Deploy (R2)](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/shuaiplus/NodeWarden)
+>
+>4. 部署完成后，在同一页面打开 Workers 设置，将 **Git 存储库** 断开连接。
+>5. 在同一位置重新连接到第 1 步 Fork 的仓库，并在页面底部将 **名称** 改回 **NodeWarden**。
+>6. GitHub 仓库 **NodeWarden2** 可以删除。
+</details>
 
 > [!TIP] 
 > 同步上游（更新仓库）：
->- 手动：Github打开你Fork的私人仓库，看到顶部同步提示时，点击 “Sync fork”。
->- 自动：进入你的 Fork 仓库 → Actions，点击 “I understand my workflows, go ahead and enable them”，每天凌晨三点自动同步至上游
+>- 手动：打开你 Fork 的 GitHub 仓库，看到顶部同步提示后，点击 `Sync fork`。
+>- 自动：进入你的 Fork 仓库 -> `Actions`，点击 `I understand my workflows, go ahead and enable them`，启用后，`Sync upstream` 会在每天凌晨 3 点自动同步上游 `main`，并保留你当前的 [wrangler.toml](./wrangler.toml) 配置不被覆盖。
+
 
 
 ### CLI 部署
@@ -102,10 +116,10 @@ npm run deploy
 
 # （可选）KV 模式（无 R2 / 无信用卡）
 npx wrangler kv namespace create ATTACHMENTS_KV
-# 将返回的 namespace id 填入 wrangler.kv.toml 的 [[kv_namespaces]].id
+# 将返回的 namespace id 替换 wrangler.kv.toml 中 `id = "placeholder"` 里的 placeholder（保留双引号）
 npm run deploy:kv
 
-# 需更新时重新拉取仓库，重新部署即可，无需创建云资源
+# 后续更新时重新拉取仓库并重新部署即可，无需重复创建云资源
 git clone https://github.com/shuaiplus/NodeWarden.git
 cd NodeWarden
 npm run deploy 
@@ -129,13 +143,13 @@ A: 在客户端中选择「导出密码库」，保存 JSON 文件。
 
 **Q: 导入导出支持哪些格式？**  
 A: 支持 Bitwarden `json/csv/密码库+附件 zip` 和 NodeWarden `密码库+附件 json`（均含加密模式），且导入下拉中看到的格式都可直接导入。  
-A: 另外支持直接导入 Bitwarden `密码库+附件 zip`，这条路径官方 Bitwarden Web 不支持。
+A: 另外还支持直接导入 Bitwarden `密码库+附件 zip`，这条路径官方 Bitwarden Web 暂不支持。
 
 **Q: 忘记主密码怎么办？**  
 A: 无法恢复，这是端到端加密的特性。建议妥善保管主密码。
 
 **Q: 可以多人使用吗？**  
-A: 支持。第一个注册的用户自动成为管理员，管理员可在管理页面生成邀请码，其他用户凭邀请码注册。
+A: 支持。第一个注册的用户会自动成为管理员；管理员可在管理页面生成邀请码，其他用户凭邀请码注册。
 
 ---
 
@@ -150,6 +164,7 @@ LGPL-3.0 License
 - [Bitwarden](https://bitwarden.com/) - 原始设计和客户端
 - [Vaultwarden](https://github.com/dani-garcia/vaultwarden) - 服务器实现参考
 - [Cloudflare Workers](https://workers.cloudflare.com/) - 无服务器平台
+
 ---
 ## Star History
 
