@@ -15,6 +15,23 @@ const messages: Record<Locale, Record<string, string>> = {
     backup_strategy_under_construction: "Under construction.",
     import_export_title: "Import & Export",
     import_export_under_construction: "Under construction.",
+    txt_backup_export: "Backup Export",
+    txt_backup_import: "Backup Import",
+    txt_backup_export_description: "Download a full instance backup ZIP for manual safekeeping.",
+    txt_backup_import_description: "Upload a previously exported backup ZIP and restore it into a fresh instance shell.",
+    txt_backup_exporting: "Exporting...",
+    txt_backup_importing: "Importing...",
+    txt_backup_export_success: "Backup exported",
+    txt_backup_import_success_relogin: "Backup imported. Please sign in again.",
+    txt_backup_export_failed: "Backup export failed",
+    txt_backup_import_failed: "Backup import failed",
+    txt_backup_file: "Backup File",
+    txt_backup_file_required: "Please select a backup file",
+    txt_backup_no_file_selected: "No backup file selected",
+    txt_backup_selected_file_name: "Selected file: {name}",
+    txt_backup_replace_confirm_title: "Replace Current Instance Data",
+    txt_backup_replace_confirm_message: "The current instance already contains data. Clear it and import the new backup?",
+    txt_backup_clear_and_import: "Clear and Import",
     txt_access_count: "Access Count",
     txt_accessed_count_times: "Accessed {count} times",
     txt_actions: "Actions",
@@ -289,6 +306,10 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_save_profile_failed: "Save profile failed",
     txt_search_sends: "Search sends...",
     txt_search_your_secure_vault: "Search your secure vault...",
+    txt_sort: "Sort",
+    txt_sort_last_edited: "Modified",
+    txt_sort_created: "Created",
+    txt_sort_name: "A-Z",
     txt_secret_and_code_are_required: "Secret and code are required",
     txt_secret_copied: "Secret copied",
     txt_secure_note: "Secure Note",
@@ -385,6 +406,23 @@ const zhCNOverrides: Record<string, string> = {
   backup_strategy_under_construction: '正在搭建中',
   import_export_title: '导入导出',
   import_export_under_construction: '正在搭建中',
+  txt_backup_export: '备份导出',
+  txt_backup_import: '备份导入',
+  txt_backup_export_description: '下载一个完整的实例备份 ZIP，手动保管即可。',
+  txt_backup_import_description: '上传之前导出的备份 ZIP，并恢复到全新实例空壳。',
+  txt_backup_exporting: '正在导出...',
+  txt_backup_importing: '正在导入...',
+  txt_backup_export_success: '备份已导出',
+  txt_backup_import_success_relogin: '备份已导入，请重新登录',
+  txt_backup_export_failed: '备份导出失败',
+  txt_backup_import_failed: '备份导入失败',
+  txt_backup_file: '备份文件',
+  txt_backup_file_required: '请选择备份文件',
+  txt_backup_no_file_selected: '尚未选择备份文件',
+  txt_backup_selected_file_name: '已选择文件：{name}',
+  txt_backup_replace_confirm_title: '替换当前实例数据',
+  txt_backup_replace_confirm_message: '当前实例里已经有数据。要先清空当前数据库和文件，再导入新的备份吗？',
+  txt_backup_clear_and_import: '清空后导入',
   txt_sign_out: '退出登录',
   txt_log_in: '登录',
   txt_log_out: '退出',
@@ -683,6 +721,10 @@ const zhCNOverrides: Record<string, string> = {
   txt_secret_copied: '密钥已复制',
   txt_security_code: '安全码',
   txt_security_code_cvv: '安全码 (CVV)',
+  txt_sort: '排序',
+  txt_sort_last_edited: '最近修改',
+  txt_sort_created: '最近创建',
+  txt_sort_name: 'A-Z',
   txt_send_created: '发送已创建',
   txt_send_deleted: '发送已删除',
   txt_send_file: '发送文件',
@@ -759,13 +801,6 @@ messages.en.txt_select_folder_placeholder = '-- Select folder --';
 messages.en.txt_import_vault_data_hint = 'Import vault data into your current account.';
 messages.en.txt_export_vault_data_hint = 'Export vault data from your current account.';
 messages.en.txt_import_export_title = 'Import & Export';
-messages.en.txt_import_export_feature_intro = 'Provides standardized vault migration across clients, including attachment-aware and encrypted workflows.';
-messages.en.txt_import_export_feature_bw_zip_title = 'Bitwarden vault + attachments ZIP';
-messages.en.txt_import_export_feature_bw_zip_desc = 'Supports both import and export for Bitwarden ZIP archives containing vault data and attachments.';
-messages.en.txt_import_export_feature_nodewarden_json_title = 'NodeWarden vault + attachments JSON';
-messages.en.txt_import_export_feature_nodewarden_json_desc = 'Supports NodeWarden JSON import/export with vault and attachment payloads in a single document. Exported vault data remains importable by Bitwarden clients.';
-messages.en.txt_import_export_feature_compat_title = 'Cross-client compatibility';
-messages.en.txt_import_export_feature_compat_desc = 'Supports Bitwarden JSON/CSV and mainstream migration formats with consistent field normalization and import mapping.';
 messages.en.txt_encrypted_mode = 'Encrypted mode';
 messages.en.txt_account_verification = 'Account verification';
 messages.en.txt_password_verification = 'Password verification';
@@ -776,6 +811,10 @@ messages.en.txt_close = 'Close';
 messages.en.txt_total = 'Total';
 messages.en.txt_import_success = 'Import successful';
 messages.en.txt_import_success_number_of_items = 'Imported {count} item(s) in total.';
+messages.en.txt_import_attachment_summary = 'Imported {imported} of {total} attachment(s).';
+messages.en.txt_import_failed_attachments_title = '{count} attachment(s) were not imported:';
+messages.en.txt_import_attachment_target_not_found = 'Matching imported item not found.';
+messages.en.txt_upload_attachment_failed = 'Attachment upload failed.';
 messages.en.txt_import_file_password_required = 'Please enter file password.';
 messages.en.txt_import_invalid_zip_password = 'Invalid ZIP password.';
 messages.en.txt_export_completed = 'Export completed';
@@ -832,6 +871,10 @@ zhCNOverrides.txt_close = '关闭';
 zhCNOverrides.txt_total = '总计';
 zhCNOverrides.txt_import_success = '数据导入成功';
 zhCNOverrides.txt_import_success_number_of_items = '一共导入了 {count} 个项目。';
+zhCNOverrides.txt_import_attachment_summary = '附件已导入 {imported}/{total} 个。';
+zhCNOverrides.txt_import_failed_attachments_title = '以下 {count} 个附件未导入：';
+zhCNOverrides.txt_import_attachment_target_not_found = '没有找到对应的导入项目。';
+zhCNOverrides.txt_upload_attachment_failed = '附件上传失败。';
 zhCNOverrides.txt_import_file_password_required = '请输入文件密码。';
 zhCNOverrides.txt_import_invalid_zip_password = 'ZIP 密码错误。';
 zhCNOverrides.txt_export_completed = '导出完成';
@@ -850,13 +893,6 @@ zhCNOverrides.txt_import_encrypted_zip_title = '导入加密 ZIP';
 zhCNOverrides.txt_import_encrypted_zip_message = '该 ZIP 压缩包已加密，请输入 ZIP 密码继续。';
 
 zhCNOverrides.txt_import_export_title = '导入导出';
-zhCNOverrides.txt_import_export_feature_intro = '提供标准化的数据迁移能力，覆盖附件与加密场景。';
-zhCNOverrides.txt_import_export_feature_bw_zip_title = 'Bitwarden 密码库 + 附件 ZIP';
-zhCNOverrides.txt_import_export_feature_bw_zip_desc = '支持导入与导出包含密码库和附件的 Bitwarden ZIP 压缩包。';
-zhCNOverrides.txt_import_export_feature_nodewarden_json_title = 'NodeWarden 密码库 + 附件 JSON';
-zhCNOverrides.txt_import_export_feature_nodewarden_json_desc = '支持 NodeWarden JSON 导入导出，单文件包含密码库与附件；导出的密码库数据可被 Bitwarden 客户端导入。';
-zhCNOverrides.txt_import_export_feature_compat_title = '跨客户端兼容';
-zhCNOverrides.txt_import_export_feature_compat_desc = '支持 Bitwarden JSON/CSV 与主流迁移格式，统一字段映射与导入行为。';
 zhCNOverrides.txt_new_type_header = '新建{type}';
 zhCNOverrides.txt_edit_type_header = '编辑{type}';
 zhCNOverrides.txt_delete_folder = '删除文件夹';
