@@ -1,11 +1,13 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import { calcTotpNow } from '@/lib/crypto';
+import { checkCipherPasswordsExposed } from '@/lib/password-breach';
 import { computeSshFingerprint, generateDefaultSshKeyMaterial } from '@/lib/ssh';
 import {
   ArrowUpDown,
   Check,
   CheckCheck,
+  ChevronLeft,
   Clipboard,
   CreditCard,
   Download,
@@ -24,6 +26,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  ShieldAlert,
   ShieldUser,
   Star,
   StarOff,
@@ -47,7 +50,7 @@ interface VaultPageProps {
   onBulkDelete: (ids: string[]) => Promise<void>;
   onBulkMove: (ids: string[], folderId: string | null) => Promise<void>;
   onVerifyMasterPassword: (email: string, password: string) => Promise<void>;
-  onNotify: (type: 'success' | 'error', text: string) => void;
+  onNotify: (type: 'success' | 'error' | 'warning', text: string) => void;
   onCreateFolder: (name: string) => Promise<void>;
   onDeleteFolder: (folderId: string) => Promise<void>;
   onDownloadAttachment: (cipher: Cipher, attachmentId: string) => Promise<void>;
@@ -58,6 +61,7 @@ type VaultSortMode = 'edited' | 'created' | 'name';
 type SidebarFilter =
   | { kind: 'all' }
   | { kind: 'favorite' }
+  | { kind: 'exposed' }
   | { kind: 'trash' }
   | { kind: 'type'; value: TypeFilter }
   | { kind: 'folder'; folderId: string | null };
@@ -76,6 +80,9 @@ const CREATE_TYPE_OPTIONS: TypeOption[] = [
 ];
 
 const VAULT_SORT_STORAGE_KEY = 'nodewarden.vault.sort.v1';
+const VAULT_EXPOSED_IGNORED_STORAGE_KEY = 'nodewarden.vault.exposed-ignored.v1';
+const VAULT_EXPOSED_SIGNATURE_STORAGE_KEY = 'nodewarden.vault.exposed-signature.v1';
+const MOBILE_LAYOUT_QUERY = '(max-width: 900px)';
 const VAULT_SORT_OPTIONS: Array<{ value: VaultSortMode; label: string }> = [
   { value: 'edited', label: t('txt_sort_last_edited') },
   { value: 'created', label: t('txt_sort_created') },
@@ -364,12 +371,43 @@ function openUri(raw: string): void {
   window.open(url, '_blank', 'noopener');
 }
 
+async function computePasswordSignature(ciphers: Cipher[]): Promise<string> {
+  const parts = ciphers
+    .filter((cipher) => Number(cipher.type || 1) === 1)
+    .map((cipher) => `${String(cipher.id || '').trim()}\u0000${String(cipher.login?.decPassword || '')}`)
+    .sort();
+  const bytes = new TextEncoder().encode(parts.join('\u0001'));
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function countVisibleExposed(results: Record<string, boolean>, ignoredMap: Record<string, boolean>): number {
+  let count = 0;
+  for (const [cipherId, exposed] of Object.entries(results)) {
+    if (exposed && !ignoredMap[cipherId]) count++;
+  }
+  return count;
+}
+
+function readIgnoredExposedMap(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(VAULT_EXPOSED_IGNORED_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, boolean>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 export default function VaultPage(props: VaultPageProps) {
   const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchComposing, setSearchComposing] = useState(false);
   const [sortMode, setSortMode] = useState<VaultSortMode>('edited');
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  const [exposedStatusMap, setExposedStatusMap] = useState<Record<string, boolean>>({});
+  const [ignoredExposedMap, setIgnoredExposedMap] = useState<Record<string, boolean>>(() => readIgnoredExposedMap());
   const [sidebarFilter, setSidebarFilter] = useState<SidebarFilter>({ kind: 'all' });
   const [selectedCipherId, setSelectedCipherId] = useState('');
   const [selectedMap, setSelectedMap] = useState<Record<string, boolean>>({});
@@ -398,11 +436,40 @@ export default function VaultPage(props: VaultPageProps) {
   const [repromptOpen, setRepromptOpen] = useState(false);
   const [repromptPassword, setRepromptPassword] = useState('');
   const [repromptApprovedCipherId, setRepromptApprovedCipherId] = useState<string | null>(null);
+  const [isMobileLayout, setIsMobileLayout] = useState(false);
+  const [mobilePanel, setMobilePanel] = useState<'list' | 'detail' | 'edit'>('list');
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const createMenuRef = useRef<HTMLDivElement | null>(null);
   const sortMenuRef = useRef<HTMLDivElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const sshSeedTicketRef = useRef(0);
   const sshFingerprintTicketRef = useRef(0);
+  const hasCompletedAutoExposureCheckRef = useRef(false);
+
+  function isVisibleExposed(cipherId: string): boolean {
+    return !!exposedStatusMap[cipherId] && !ignoredExposedMap[cipherId];
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia(MOBILE_LAYOUT_QUERY);
+    const sync = () => setIsMobileLayout(media.matches);
+    sync();
+    if (typeof media.addEventListener === 'function') {
+      media.addEventListener('change', sync);
+      return () => media.removeEventListener('change', sync);
+    }
+    media.addListener(sync);
+    return () => media.removeListener(sync);
+  }, []);
+
+  useEffect(() => {
+    const onToggleSidebar = () => {
+      setMobileSidebarOpen((open) => !open);
+    };
+    window.addEventListener('nodewarden:toggle-sidebar', onToggleSidebar);
+    return () => window.removeEventListener('nodewarden:toggle-sidebar', onToggleSidebar);
+  }, []);
 
   useEffect(() => {
     const onQuickAdd = () => {
@@ -430,6 +497,59 @@ export default function VaultPage(props: VaultPageProps) {
       // ignore storage write failures
     }
   }, [sortMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(VAULT_EXPOSED_IGNORED_STORAGE_KEY, JSON.stringify(ignoredExposedMap));
+    } catch {
+      // ignore storage write failures
+    }
+  }, [ignoredExposedMap]);
+
+  useEffect(() => {
+    if (props.loading) return;
+
+    const loginCiphers = props.ciphers.filter(
+      (cipher) => Number(cipher.type || 1) === 1 && !!String(cipher.login?.decPassword || '').trim()
+    );
+
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const [signature, results] = await Promise.all([
+          computePasswordSignature(loginCiphers),
+          checkCipherPasswordsExposed(loginCiphers),
+        ]);
+        if (cancelled) return;
+
+        setExposedStatusMap(results);
+
+        const previousSignature =
+          typeof localStorage !== 'undefined'
+            ? String(localStorage.getItem(VAULT_EXPOSED_SIGNATURE_STORAGE_KEY) || '').trim()
+            : '';
+
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem(VAULT_EXPOSED_SIGNATURE_STORAGE_KEY, signature);
+        }
+
+        if (hasCompletedAutoExposureCheckRef.current && previousSignature && previousSignature !== signature) {
+          const count = countVisibleExposed(results, ignoredExposedMap);
+          if (count > 0) {
+            props.onNotify('warning', t('txt_exposed_password_check_complete_count', { count }));
+          }
+        }
+        hasCompletedAutoExposureCheckRef.current = true;
+      } catch {
+        // Keep exposed-password checks silent in the background.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [props.ciphers, props.loading]);
 
   useEffect(() => {
     const onPointerDown = (event: Event) => {
@@ -476,6 +596,19 @@ export default function VaultPage(props: VaultPageProps) {
   }, [selectedCipherId]);
 
   useEffect(() => {
+    if (!isMobileLayout) {
+      setMobilePanel('list');
+      setMobileSidebarOpen(false);
+      return;
+    }
+    if (isEditing) {
+      setMobilePanel('edit');
+    } else if (!selectedCipherId) {
+      setMobilePanel('list');
+    }
+  }, [isMobileLayout, isEditing, selectedCipherId]);
+
+  useEffect(() => {
     if (searchComposing) return;
     const timer = window.setTimeout(() => setSearchQuery(searchInput.trim().toLowerCase()), 90);
     return () => window.clearTimeout(timer);
@@ -494,6 +627,7 @@ export default function VaultPage(props: VaultPageProps) {
       } else {
         if (isDeleted) return false;
         if (sidebarFilter.kind === 'favorite' && !cipher.favorite) return false;
+        if (sidebarFilter.kind === 'exposed' && !isVisibleExposed(cipher.id)) return false;
         if (sidebarFilter.kind === 'type' && cipherTypeKey(Number(cipher.type || 1)) !== sidebarFilter.value) return false;
         if (sidebarFilter.kind === 'folder') {
           if (sidebarFilter.folderId === null) {
@@ -529,7 +663,7 @@ export default function VaultPage(props: VaultPageProps) {
     });
 
     return next;
-  }, [props.ciphers, sidebarFilter, searchQuery, sortMode]);
+  }, [props.ciphers, sidebarFilter, searchQuery, sortMode, exposedStatusMap, ignoredExposedMap]);
 
   useEffect(() => {
     if (isCreating) return;
@@ -546,6 +680,8 @@ export default function VaultPage(props: VaultPageProps) {
     () => props.ciphers.find((x) => x.id === selectedCipherId) || null,
     [props.ciphers, selectedCipherId]
   );
+  const selectedCipherExposed = !!(selectedCipher && exposedStatusMap[selectedCipher.id]);
+  const selectedCipherIgnored = !!(selectedCipher && ignoredExposedMap[selectedCipher.id]);
   const passkeyCreatedAt = firstPasskeyCreationTime(selectedCipher);
   const selectedAttachments = useMemo(
     () => (Array.isArray(selectedCipher?.attachments) ? selectedCipher.attachments : []),
@@ -613,6 +749,8 @@ function folderName(id: string | null | undefined): string {
     setLocalError('');
     setAttachmentQueue([]);
     setRemovedAttachmentIds({});
+    if (isMobileLayout) setMobilePanel('edit');
+    setMobileSidebarOpen(false);
     if (type === 5) void seedSshDefaults();
   }
 
@@ -625,15 +763,19 @@ function folderName(id: string | null | undefined): string {
     setLocalError('');
     setAttachmentQueue([]);
     setRemovedAttachmentIds({});
+    if (isMobileLayout) setMobilePanel('edit');
+    setMobileSidebarOpen(false);
   }
 
   function cancelEdit(): void {
+    const returnToDetail = isMobileLayout && !isCreating && !!selectedCipher;
     setDraft(null);
     setIsEditing(false);
     setIsCreating(false);
     setLocalError('');
     setAttachmentQueue([]);
     setRemovedAttachmentIds({});
+    if (isMobileLayout) setMobilePanel(returnToDetail ? 'detail' : 'list');
   }
 
   function updateDraft(patch: Partial<VaultDraft>): void {
@@ -743,11 +885,26 @@ function folderName(id: string | null | undefined): string {
       if (isCreating) {
         await props.onCreate(nextDraft, attachmentQueue);
       } else if (selectedCipher) {
+        const passwordChanged =
+          nextDraft.type === 1 &&
+          String(nextDraft.loginPassword || '') !== String(selectedCipher.login?.decPassword || '');
         const removeAttachmentIds = Object.keys(removedAttachmentIds).filter((id) => !!removedAttachmentIds[id]);
         await props.onUpdate(selectedCipher, nextDraft, {
           addFiles: attachmentQueue,
           removeAttachmentIds,
         });
+        if (passwordChanged) {
+          setExposedStatusMap((prev) => {
+            const next = { ...prev };
+            delete next[selectedCipher.id];
+            return next;
+          });
+          setIgnoredExposedMap((prev) => {
+            const next = { ...prev };
+            delete next[selectedCipher.id];
+            return next;
+          });
+        }
       }
       setIsCreating(false);
       setIsEditing(false);
@@ -755,6 +912,7 @@ function folderName(id: string | null | undefined): string {
       setLocalError('');
       setAttachmentQueue([]);
       setRemovedAttachmentIds({});
+      if (isMobileLayout) setMobilePanel('detail');
     } finally {
       setBusy(false);
     }
@@ -767,6 +925,7 @@ function folderName(id: string | null | undefined): string {
       await props.onDelete(pendingDelete);
       setPendingDelete(null);
       cancelEdit();
+      if (isMobileLayout) setMobilePanel('list');
     } finally {
       setBusy(false);
     }
@@ -810,6 +969,15 @@ function folderName(id: string | null | undefined): string {
     } finally {
       setBusy(false);
     }
+  }
+
+  function toggleIgnoreExposed(cipherId: string): void {
+    setIgnoredExposedMap((prev) => {
+      const next = { ...prev };
+      if (next[cipherId]) delete next[cipherId];
+      else next[cipherId] = true;
+      return next;
+    });
   }
 
   async function verifyReprompt(): Promise<void> {
@@ -862,14 +1030,26 @@ function folderName(id: string | null | undefined): string {
 
   return (
     <>
-      <div className="vault-grid">
-        <aside className="sidebar">
+      <div className={`vault-grid ${isMobileLayout ? `mobile-panel-${mobilePanel}` : ''}`}>
+        {isMobileLayout && mobileSidebarOpen && <div className="mobile-sidebar-mask" onClick={() => setMobileSidebarOpen(false)} />}
+        <aside className={`sidebar ${isMobileLayout ? 'mobile-sidebar-sheet' : ''} ${isMobileLayout && mobileSidebarOpen ? 'open' : ''}`}>
+          {isMobileLayout && (
+            <div className="mobile-sidebar-head">
+              <div className="mobile-sidebar-title">{t('txt_folders')}</div>
+              <button type="button" className="mobile-sidebar-close" onClick={() => setMobileSidebarOpen(false)} aria-label={t('txt_close')}>
+                <X size={16} />
+              </button>
+            </div>
+          )}
           <div className="sidebar-block">
             <button type="button" className={`tree-btn ${sidebarFilter.kind === 'all' ? 'active' : ''}`} onClick={() => setSidebarFilter({ kind: 'all' })}>
               <LayoutGrid size={14} className="tree-icon" /> <span className="tree-label">{t('txt_all_items')}</span>
             </button>
             <button type="button" className={`tree-btn ${sidebarFilter.kind === 'favorite' ? 'active' : ''}`} onClick={() => setSidebarFilter({ kind: 'favorite' })}>
               <Star size={14} className="tree-icon" /> <span className="tree-label">{t('txt_favorites')}</span>
+            </button>
+            <button type="button" className={`tree-btn ${sidebarFilter.kind === 'exposed' ? 'active' : ''}`} onClick={() => setSidebarFilter({ kind: 'exposed' })}>
+              <ShieldAlert size={14} className="tree-icon" /> <span className="tree-label">{t('txt_exposed_passwords')}</span>
             </button>
             <button type="button" className={`tree-btn ${sidebarFilter.kind === 'trash' ? 'active' : ''}`} onClick={() => setSidebarFilter({ kind: 'trash' })}>
               <Trash2 size={14} className="tree-icon" /> <span className="tree-label">{t('txt_trash')}</span>
@@ -978,7 +1158,7 @@ function folderName(id: string | null | undefined): string {
                 </div>
               )}
             </div>
-            <button type="button" className="btn btn-secondary small" disabled={busy || props.loading} onClick={() => void syncVault()}>
+            <button type="button" className="btn btn-secondary small list-icon-btn" disabled={busy || props.loading} onClick={() => void syncVault()}>
               <RefreshCw size={14} className="btn-icon" /> {t('txt_sync_vault')}
             </button>
           </div>
@@ -998,9 +1178,15 @@ function folderName(id: string | null | undefined): string {
             >
               <CheckCheck size={14} className="btn-icon" /> {t('txt_select_all')}
             </button>
-            <div className="create-menu-wrap" ref={createMenuRef}>
-              <button type="button" className="btn btn-primary small" onClick={() => setCreateMenuOpen((x) => !x)}>
-                <Plus size={14} className="btn-icon" /> {t('txt_add')}
+            <div className="create-menu-wrap mobile-fab-wrap" ref={createMenuRef}>
+              <button
+                type="button"
+                className="btn btn-primary small mobile-fab-trigger"
+                aria-label={t('txt_add')}
+                title={t('txt_add')}
+                onClick={() => setCreateMenuOpen((x) => !x)}
+              >
+                <Plus size={14} className="btn-icon" />
               </button>
               {createMenuOpen && (
                 <div className="create-menu">
@@ -1056,13 +1242,18 @@ function folderName(id: string | null | undefined): string {
                     }
                     setSelectedCipherId(cipher.id);
                     setRepromptApprovedCipherId(null);
+                    if (isMobileLayout) setMobilePanel('detail');
+                    setMobileSidebarOpen(false);
                   }}
                 >
                   <div className="list-icon-wrap">
                     <VaultListIcon cipher={cipher} />
                   </div>
                   <div className="list-text">
-                    <span className="list-title" title={cipher.decName || t('txt_no_name')}>{cipher.decName || t('txt_no_name')}</span>
+                    <span className="list-title" title={cipher.decName || t('txt_no_name')}>
+                      <span className="list-title-text">{cipher.decName || t('txt_no_name')}</span>
+                      {isVisibleExposed(cipher.id) ? <span className="list-badge danger">{t('txt_exposed_short')}</span> : null}
+                    </span>
                     <span className="list-sub" title={listSubtitle(cipher)}>{listSubtitle(cipher)}</span>
                   </div>
                 </button>
@@ -1072,7 +1263,22 @@ function folderName(id: string | null | undefined): string {
           </div>
         </section>
 
-        <section className="detail-col">
+        <section className={`detail-col ${isMobileLayout ? 'mobile-detail-sheet' : ''} ${isMobileLayout && mobilePanel !== 'list' ? 'open' : ''}`}>
+          {isMobileLayout && mobilePanel !== 'list' && (
+            <div className="mobile-panel-head">
+              <button
+                type="button"
+                className="btn btn-secondary small mobile-panel-back"
+                onClick={() => {
+                  if (isEditing) cancelEdit();
+                  else setMobilePanel('list');
+                }}
+              >
+                <ChevronLeft size={14} className="btn-icon" />
+                {t('txt_back')}
+              </button>
+            </div>
+          )}
           {isEditing && draft && (
             <>
               <div className="card">
@@ -1472,6 +1678,25 @@ function folderName(id: string | null | undefined): string {
                       </button>
                     </div>
                   </div>
+                  {selectedCipherExposed && (
+                    <div className="kv-row">
+                      <span className="kv-label">{t('txt_exposed_passwords')}</span>
+                      <div className="kv-main">
+                        <strong className="exposed-status danger">
+                          {selectedCipherIgnored ? t('txt_exposed_ignored') : t('txt_exposed')}
+                        </strong>
+                      </div>
+                      <div className="kv-actions">
+                        <button
+                          type="button"
+                          className="btn btn-secondary small"
+                          onClick={() => toggleIgnoreExposed(selectedCipher.id)}
+                        >
+                          <X size={14} className="btn-icon" /> {selectedCipherIgnored ? t('txt_unignore') : t('txt_ignore')}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   {!!selectedCipher.login.decTotp && (
                     <div className="kv-row">
                       <span className="kv-label">{t('txt_totp')}</span>
