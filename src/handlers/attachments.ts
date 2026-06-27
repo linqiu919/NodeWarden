@@ -1,16 +1,17 @@
-import { Env, Attachment, DEFAULT_DEV_SECRET } from '../types';
-import { notifyUserVaultSync } from '../durable/notifications-hub';
+import { Env, Attachment, Cipher, DEFAULT_DEV_SECRET } from '../types';
+import { notifyUserCipherUpdate, notifyUserVaultSync } from '../durable/notifications-hub';
 import { StorageService } from '../services/storage';
 import { jsonResponse, errorResponse } from '../utils/response';
 import { buildDirectUploadUrl, getSafeJwtSecret, parseDirectUploadPayload } from '../utils/direct-upload';
 import { generateUUID } from '../utils/uuid';
+import { sanitizeDownloadContentType } from '../utils/content-type';
 import {
   createAttachmentUploadToken,
   createFileDownloadToken,
   verifyAttachmentUploadToken,
   verifyFileDownloadToken,
 } from '../utils/jwt';
-import { cipherToResponse } from './ciphers';
+import { applyCipherEmbeddedAttachmentMetadata, cipherToResponse } from './ciphers';
 import { LIMITS } from '../config/limits';
 import { readActingDeviceIdentifier } from '../utils/device';
 import {
@@ -20,6 +21,7 @@ import {
   getBlobStorageMaxBytes,
   putBlobObject,
 } from '../services/blob-store';
+import { auditRequestMetadata, writeAuditEvent } from '../services/audit-events';
 
 function notifyVaultSyncForRequest(
   request: Request,
@@ -28,6 +30,59 @@ function notifyVaultSyncForRequest(
   revisionDate: string
 ): void {
   notifyUserVaultSync(env, userId, revisionDate, readActingDeviceIdentifier(request));
+}
+
+function normalizeOptionalId(value: unknown): string | null {
+  if (value == null) return null;
+  const normalized = String(value).trim();
+  return normalized ? normalized : null;
+}
+
+function notifyCipherUpdateForRequest(
+  request: Request,
+  env: Env,
+  cipher: Cipher,
+  revisionDate: string
+): void {
+  notifyUserCipherUpdate(env, {
+    userId: cipher.userId,
+    cipherId: cipher.id,
+    revisionDate,
+    organizationId: normalizeOptionalId((cipher as any).organizationId ?? null),
+    collectionIds: Array.isArray((cipher as any).collectionIds)
+      ? (cipher as any).collectionIds.map((id: unknown) => String(id || '').trim()).filter(Boolean)
+      : null,
+    contextId: readActingDeviceIdentifier(request),
+  });
+}
+
+function contentDispositionAttachment(fileName: string | null | undefined): string {
+  const fallback = 'attachment';
+  const value = String(fileName || fallback)
+    .replace(/[\r\n"]/g, '_')
+    .trim() || fallback;
+  return `attachment; filename="${value}"`;
+}
+
+async function writeAttachmentAudit(
+  storage: StorageService,
+  request: Request,
+  userId: string,
+  action: string,
+  metadata: Record<string, unknown>
+): Promise<void> {
+  await writeAuditEvent(storage, {
+    actorUserId: userId,
+    action,
+    category: 'data',
+    level: action.includes('delete') ? 'security' : 'info',
+    targetType: 'attachment',
+    targetId: typeof metadata.id === 'string' ? metadata.id : null,
+    metadata: {
+      ...metadata,
+      ...auditRequestMetadata(request),
+    },
+  });
 }
 
 // Format file size to human readable
@@ -53,6 +108,7 @@ async function runWithConcurrency<T>(
 async function processAttachmentUpload(
   request: Request,
   env: Env,
+  cipher: Cipher,
   attachment: Attachment,
   cipherId: string
 ): Promise<Response> {
@@ -94,6 +150,7 @@ async function processAttachmentUpload(
   const revisionInfo = await storage.updateCipherRevisionDate(cipherId);
   if (revisionInfo) {
     notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
+    notifyCipherUpdateForRequest(request, env, cipher, revisionInfo.revisionDate);
   }
 
   return new Response(null, { status: 201 });
@@ -154,6 +211,7 @@ export async function handleCreateAttachment(
   const revisionInfo = await storage.updateCipherRevisionDate(cipherId);
   if (revisionInfo) {
     notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
+    notifyCipherUpdateForRequest(request, env, cipher, revisionInfo.revisionDate);
   }
 
   // Get updated cipher for response
@@ -197,7 +255,7 @@ export async function handleUploadAttachment(
     return errorResponse('Attachment not found', 404);
   }
 
-  return processAttachmentUpload(request, env, attachment, cipherId);
+  return processAttachmentUpload(request, env, cipher, attachment, cipherId);
 }
 
 export async function handlePublicUploadAttachment(
@@ -235,7 +293,7 @@ export async function handlePublicUploadAttachment(
     return errorResponse('Attachment not found', 404);
   }
 
-  return processAttachmentUpload(request, env, attachment, cipherId);
+  return processAttachmentUpload(request, env, cipher, attachment, cipherId);
 }
 
 // GET /api/ciphers/{cipherId}/attachment/{attachmentId}
@@ -260,6 +318,7 @@ export async function handleGetAttachment(
   if (!attachment || attachment.cipherId !== cipherId) {
     return errorResponse('Attachment not found', 404);
   }
+  const responseAttachment = applyCipherEmbeddedAttachmentMetadata(cipher, [attachment])[0] || attachment;
 
   // Generate short-lived download token
   const token = await createFileDownloadToken(cipherId, attachmentId, env.JWT_SECRET);
@@ -270,12 +329,12 @@ export async function handleGetAttachment(
 
   return jsonResponse({
     object: 'attachment',
-    id: attachment.id,
+    id: responseAttachment.id,
     url: downloadUrl,
-    fileName: attachment.fileName,
-    key: attachment.key,
-    size: String(Number(attachment.size) || 0),
-    sizeName: attachment.sizeName,
+    fileName: responseAttachment.fileName,
+    key: responseAttachment.key,
+    size: String(Number(responseAttachment.size) || 0),
+    sizeName: responseAttachment.sizeName,
   });
 }
 
@@ -325,6 +384,7 @@ export async function handleUpdateAttachmentMetadata(
   const revisionInfo = await storage.updateCipherRevisionDate(cipherId);
   if (revisionInfo) {
     notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
+    notifyCipherUpdateForRequest(request, env, cipher, revisionInfo.revisionDate);
   }
 
   return jsonResponse({
@@ -390,9 +450,11 @@ export async function handlePublicDownloadAttachment(
 
   return new Response(object.body, {
     headers: {
-      'Content-Type': object.contentType || 'application/octet-stream',
+      'Content-Type': sanitizeDownloadContentType(object.contentType),
       'Content-Length': String(object.size),
+      'Content-Disposition': contentDispositionAttachment(attachment.fileName),
       'Cache-Control': 'private, no-cache',
+      'X-Content-Type-Options': 'nosniff',
     },
   });
 }
@@ -430,14 +492,24 @@ export async function handleDeleteAttachment(
   const revisionInfo = await storage.updateCipherRevisionDate(cipherId);
   if (revisionInfo) {
     notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
+    notifyCipherUpdateForRequest(request, env, cipher, revisionInfo.revisionDate);
+    await writeAttachmentAudit(storage, request, revisionInfo.userId, 'attachment.delete', {
+      id: attachmentId,
+      cipherId,
+      size: attachment.size,
+    });
   }
 
   // Get updated cipher for response
   const updatedCipher = await storage.getCipher(cipherId);
   const attachments = await storage.getAttachmentsByCipher(cipherId);
+  const cipherResponse = cipherToResponse(updatedCipher!, attachments);
 
   return jsonResponse({
-    cipher: cipherToResponse(updatedCipher!, attachments),
+    Cipher: cipherResponse,
+    cipher: cipherResponse,
+    Object: 'deleteAttachment',
+    object: 'deleteAttachment',
   });
 }
 

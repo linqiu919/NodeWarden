@@ -9,19 +9,27 @@ import {
 } from './handlers/sends';
 import { handleKnownDevice } from './handlers/devices';
 import { handleToken, handlePrelogin, handleRevocation } from './handlers/identity';
+import { handleGetAccountPasskeyAssertionOptions } from './handlers/account-passkeys';
 import {
   handleRegister,
   handleGetPasswordHint,
   handleRecoverTwoFactor,
 } from './handlers/accounts';
+import {
+  handleCreateAuthRequest,
+  handleGetAuthRequestResponse,
+} from './handlers/auth-requests';
 import { handlePublicDownloadAttachment } from './handlers/attachments';
 import { handlePublicUploadAttachment } from './handlers/attachments';
 import {
+  handleAnonymousNotificationsHub,
   handleNotificationsHub,
   handleNotificationsNegotiate,
 } from './handlers/notifications';
 import { handlePublicUploadSendFile } from './handlers/sends';
+import { isSafeWebsiteIconContentType } from './utils/content-type';
 import { jsonResponse } from './utils/response';
+import { StorageService } from './services/storage';
 import type { Env } from './types';
 
 type PublicRateLimiter = (category?: string, maxRequests?: number) => Promise<Response | null>;
@@ -31,6 +39,7 @@ export interface WebBootstrapResponse {
   defaultKdfIterations: number;
   jwtUnsafeReason: JwtUnsafeReason;
   jwtSecretMinLength: number;
+  registrationInviteRequired: boolean;
 }
 
 function isSameOriginWriteRequest(request: Request): boolean {
@@ -113,11 +122,12 @@ function buildConfigResponse(origin: string) {
     _icon_service_url: buildIconServiceTemplate(origin),
     _icon_service_csp: buildIconServiceCsp(origin),
     featureStates: {
-      'cipher-key-encryption': true,
+      'cipher-key-encryption': LIMITS.compatibility.cipherKeyEncryptionFeatureEnabled,
       'duo-redirect': true,
       'email-verification': true,
       'pm-19051-send-email-verification': false,
       'pm-19148-innovation-archive': true,
+      'pm-30529-webauthn-related-origins': true,
       'unauth-ui-refresh': true,
       'web-push': false,
     },
@@ -142,6 +152,18 @@ function normalizeIconHost(rawHost: string): string | null {
 }
 
 const ICON_UPSTREAM_TIMEOUT_MS = 2500;
+const ICON_MAX_BUFFER_BYTES = 256 * 1024;
+const BITWARDEN_DEFAULT_GLOBE_ICON_BYTES = 500;
+const BITWARDEN_DEFAULT_GLOBE_ICON_SHA256 = 'aaa64871332ad5b7d28fe8874efb19c2d9cc2f1e6de75d52b080b438225a0783';
+
+type IconSource = {
+  url: string;
+  rejectImage?: {
+    byteLength: number;
+    sha256: string;
+  };
+  headers?: HeadersInit;
+};
 
 async function fetchIconSource(source: { url: string; headers?: HeadersInit }): Promise<Response> {
   const controller = new AbortController();
@@ -161,51 +183,123 @@ async function fetchIconSource(source: { url: string; headers?: HeadersInit }): 
   }
 }
 
+async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function getPositiveContentLength(headers: Headers): number | null {
+  const raw = headers.get('Content-Length');
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+async function readIconBytes(response: Response, maxBytes: number): Promise<ArrayBuffer | null> {
+  if (!response.body) return null;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    void reader.cancel().catch(() => undefined);
+  }, ICON_UPSTREAM_TIMEOUT_MS);
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return null;
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (timedOut || totalBytes === 0) return null;
+
+  const output = new ArrayBuffer(totalBytes);
+  const bytes = new Uint8Array(output);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
+}
+
+function iconResponse(body: BodyInit | null, contentType: string | null): Response {
+  return new Response(body, {
+    status: 200,
+    headers: {
+      'Content-Type': contentType || 'image/png',
+      'Cache-Control': `public, max-age=${LIMITS.cache.iconTtlSeconds}, immutable`,
+      'Content-Security-Policy': "default-src 'none'; img-src 'self' data:; sandbox",
+    },
+  });
+}
+
 async function handleWebsiteIcon(host: string, fallbackMode: 'default' | 'not-found' = 'default'): Promise<Response> {
   const normalizedHost = normalizeIconHost(host);
   if (!normalizedHost) return fallbackMode === 'not-found' ? handleMissingWebsiteIcon() : handleNwFavicon();
 
   const encodedHost = encodeURIComponent(normalizedHost);
   const requestHeaders = { 'User-Agent': 'NodeWarden/1.0' };
-  const upstreamSources: Array<{ url: string; headers?: HeadersInit }> = [
+  const upstreamSources: IconSource[] = [
+    {
+      url: `https://favicon.im/zh/${encodedHost}?larger=true&throw-error-on-404=true`,
+      headers: requestHeaders,
+    },
     {
       url: `https://icons.bitwarden.net/${encodedHost}/icon.png`,
-      headers: requestHeaders,
-    },
-    {
-      url: `https://favicon.im/${encodedHost}`,
-      headers: requestHeaders,
-    },
-    {
-      url: `https://icons.duckduckgo.com/ip3/${encodedHost}.ico`,
+      rejectImage: {
+        byteLength: BITWARDEN_DEFAULT_GLOBE_ICON_BYTES,
+        sha256: BITWARDEN_DEFAULT_GLOBE_ICON_SHA256,
+      },
       headers: requestHeaders,
     },
   ];
 
-  try {
-    for (const source of upstreamSources) {
+  for (const source of upstreamSources) {
+    try {
       const resp = await fetchIconSource(source);
 
       if (!resp.ok) continue;
       const contentType = String(resp.headers.get('Content-Type') || '').toLowerCase();
-      if (!contentType.startsWith('image/')) continue;
+      if (!isSafeWebsiteIconContentType(contentType)) continue;
 
-      return new Response(resp.body, {
-        status: 200,
-        headers: {
-          'Content-Type': resp.headers.get('Content-Type') || 'image/png',
-          'Cache-Control': `public, max-age=${LIMITS.cache.iconTtlSeconds}, immutable`,
-        },
-      });
+      const contentLength = getPositiveContentLength(resp.headers);
+      if (contentLength !== null && contentLength > ICON_MAX_BUFFER_BYTES) continue;
+
+      const bytes = await readIconBytes(resp, ICON_MAX_BUFFER_BYTES);
+      if (!bytes) continue;
+      if (
+        source.rejectImage &&
+        bytes.byteLength === source.rejectImage.byteLength &&
+        (await sha256Hex(bytes)) === source.rejectImage.sha256
+      ) {
+        continue;
+      }
+
+      return iconResponse(bytes, resp.headers.get('Content-Type'));
+    } catch {
+      continue;
     }
-
-    return fallbackMode === 'not-found' ? handleMissingWebsiteIcon() : handleNwFavicon();
-  } catch {
-    return fallbackMode === 'not-found' ? handleMissingWebsiteIcon() : handleNwFavicon();
   }
+
+  return fallbackMode === 'not-found' ? handleMissingWebsiteIcon() : handleNwFavicon();
 }
 
-export function buildWebBootstrapResponse(env: Env): WebBootstrapResponse {
+export async function buildWebBootstrapResponse(env: Env): Promise<WebBootstrapResponse> {
   const secret = (env.JWT_SECRET || '').trim();
   const jwtUnsafeReason =
     !secret
@@ -215,11 +309,14 @@ export function buildWebBootstrapResponse(env: Env): WebBootstrapResponse {
         : secret.length < LIMITS.auth.jwtSecretMinLength
           ? 'too_short'
           : null;
+  const storage = new StorageService(env.DB);
+  const userCount = await storage.getUserCount();
 
   return {
     defaultKdfIterations: LIMITS.auth.defaultKdfIterations,
     jwtUnsafeReason,
     jwtSecretMinLength: LIMITS.auth.jwtSecretMinLength,
+    registrationInviteRequired: userCount > 0,
   };
 }
 
@@ -243,11 +340,13 @@ export async function handlePublicRoute(
   if ((path === '/api/web-bootstrap' || path === '/web-bootstrap') && method === 'GET') {
     const blocked = await enforcePublicRateLimit('public-read', LIMITS.rateLimit.publicReadRequestsPerMinute);
     if (blocked) return blocked;
-    return jsonResponse(buildWebBootstrapResponse(env));
+    return jsonResponse(await buildWebBootstrapResponse(env));
   }
 
   const iconMatch = path.match(/^\/icons\/([^/]+)\/icon\.png$/i);
   if (iconMatch && method === 'GET') {
+    const blocked = await enforcePublicRateLimit('public-icon', LIMITS.rateLimit.publicIconRequestsPerMinute);
+    if (blocked) return blocked;
     const fallbackMode = new URL(request.url).searchParams.get('fallback') === '404' ? 'not-found' : 'default';
     return handleWebsiteIcon(iconMatch[1], fallbackMode);
   }
@@ -299,6 +398,19 @@ export async function handlePublicRoute(
     return handleDownloadSendFile(request, env, sendDownloadMatch[1], sendDownloadMatch[2]);
   }
 
+  if ((path === '/api/auth-requests' || path === '/api/auth-requests/') && method === 'POST') {
+    const blocked = await enforcePublicRateLimit('public-sensitive', LIMITS.rateLimit.sensitivePublicRequestsPerMinute);
+    if (blocked) return blocked;
+    return handleCreateAuthRequest(request, env);
+  }
+
+  const authRequestResponseMatch = path.match(/^\/api\/auth-requests\/([a-f0-9-]+)\/response$/i);
+  if (authRequestResponseMatch && method === 'GET') {
+    const blocked = await enforcePublicRateLimit('public-sensitive', LIMITS.rateLimit.sensitivePublicRequestsPerMinute);
+    if (blocked) return blocked;
+    return handleGetAuthRequestResponse(request, env, authRequestResponseMatch[1]);
+  }
+
   if (path === '/identity/connect/token' && method === 'POST') {
     return handleToken(request, env);
   }
@@ -332,6 +444,12 @@ export async function handlePublicRoute(
     return handlePrelogin(request, env);
   }
 
+  if (path === '/identity/accounts/webauthn/assertion-options' && method === 'GET') {
+    const blocked = await enforcePublicRateLimit('public-sensitive', LIMITS.rateLimit.sensitivePublicRequestsPerMinute);
+    if (blocked) return blocked;
+    return handleGetAccountPasskeyAssertionOptions(request, env);
+  }
+
   if ((path === '/identity/accounts/recover-2fa' || path === '/api/accounts/recover-2fa') && method === 'POST') {
     return handleRecoverTwoFactor(request, env);
   }
@@ -352,7 +470,7 @@ export async function handlePublicRoute(
     const blocked = await enforcePublicRateLimit('public-read', LIMITS.rateLimit.publicReadRequestsPerMinute);
     if (blocked) return blocked;
     const origin = new URL(request.url).origin;
-    return jsonResponse(buildConfigResponse(origin));
+    return jsonResponse(buildConfigResponse(origin), 200, { 'Cache-Control': 'no-store' });
   }
 
   if (path === '/api/version' && method === 'GET') {
@@ -379,6 +497,10 @@ export async function handlePublicRoute(
 
   if (path === '/notifications/hub' && method === 'GET') {
     return handleNotificationsHub(request, env);
+  }
+
+  if (path === '/notifications/anonymous-hub' && method === 'GET') {
+    return handleAnonymousNotificationsHub(request, env);
   }
   return null;
 }

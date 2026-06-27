@@ -789,6 +789,7 @@ async function runDemoRemoteRestoreProgress(fileName: string): Promise<void> {
 export function createDemoInitialBootstrapState(): InitialAppBootstrapState {
   return {
     defaultKdfIterations: 600000,
+    registrationInviteRequired: true,
     jwtWarning: null,
     session: null,
     phase: 'login',
@@ -909,6 +910,8 @@ export function createDemoMainRoutesProps(base: AppMainRoutesProps, notify: Noti
     authorizedDevices: state.authorizedDevices,
     authorizedDevicesLoading: false,
     authorizedDevicesError: '',
+    domainRulesLoading: false,
+    domainRulesError: '',
     onImport: async () => {
       await readonly();
       return createDemoImportResult();
@@ -929,6 +932,11 @@ export function createDemoMainRoutesProps(base: AppMainRoutesProps, notify: Noti
       notify('success', t('txt_item_updated'));
     },
     onDeleteVaultItem: async (cipher) => {
+      if (cipher.deletedDate || (cipher as { deletedAt?: string | null }).deletedAt) {
+        state.setCiphers((prev) => prev.filter((item) => item.id !== cipher.id));
+        notify('success', t('txt_item_deleted_permanently'));
+        return;
+      }
       const deletedDate = new Date().toISOString();
       state.setCiphers((prev) => prev.map((item) => (
         item.id === cipher.id ? { ...item, deletedDate, archivedDate: null, revisionDate: deletedDate } : item
@@ -961,6 +969,11 @@ export function createDemoMainRoutesProps(base: AppMainRoutesProps, notify: Noti
       const idSet = new Set(ids);
       state.setCiphers((prev) => prev.filter((item) => !idSet.has(item.id)));
       notify('success', t('txt_deleted_selected_items_permanently'));
+    },
+    onRestoreVaultItems: async (ids) => {
+      const idSet = new Set(ids);
+      state.setCiphers((prev) => prev.map((item) => (idSet.has(item.id) ? { ...item, deletedDate: null } : item)));
+      notify('success', t('txt_restored_selected_items'));
     },
     onBulkRestoreVaultItems: async (ids) => {
       const idSet = new Set(ids);
@@ -1055,6 +1068,10 @@ export function createDemoMainRoutesProps(base: AppMainRoutesProps, notify: Noti
     onRefreshAuthorizedDevices: async () => {
       notify('success', t('txt_demo_devices_refreshed'));
     },
+    onRefreshDomainRules: () => {
+      notify('success', t('txt_domain_rules_refreshed'));
+    },
+    onSaveDomainRules: readonly,
     onRenameAuthorizedDevice: async (device, name) => {
       const normalized = String(name || '').trim();
       if (!normalized) {
@@ -1075,6 +1092,14 @@ export function createDemoMainRoutesProps(base: AppMainRoutesProps, notify: Noti
           : item
       )));
       notify('success', t('txt_device_authorization_revoked'));
+    },
+    onTrustDevicePermanently: (device) => {
+      state.setAuthorizedDevices((prev) => prev.map((item) => (
+        item.identifier === device.identifier && item.trusted
+          ? { ...item, trustedUntil: '2099-12-31T23:59:59.000Z', revisionDate: new Date().toISOString() }
+          : item
+      )));
+      notify('success', t('txt_device_trusted_permanently'));
     },
     onRemoveDevice: (device) => {
       state.setAuthorizedDevices((prev) => prev.filter((item) => item.identifier !== device.identifier));
@@ -1122,32 +1147,41 @@ export function createDemoMainRoutesProps(base: AppMainRoutesProps, notify: Noti
       )));
       notify('success', t('txt_invite_revoked'));
     },
-    onExportBackup: async () => {
+    onLoadAuditLogSettings: async () => ({ retentionDays: 90, maxEntries: null }),
+    onSaveAuditLogSettings: async (settings) => {
+      notify('success', t('txt_log_settings_saved'));
+      return settings;
+    },
+    onClearAuditLogs: async () => {
+      notify('success', t('txt_logs_cleared'));
+      return 0;
+    },
+    onExportBackup: async (_masterPassword: string) => {
       notify('success', t('txt_backup_export_success'));
     },
-    onImportBackup: async () => {
+    onImportBackup: async (_masterPassword: string, _file: File, _replaceExisting?: boolean) => {
       resetDemoVaultState(state);
       notify('success', t('txt_backup_import_success_relogin'));
       return createDemoImportBackupResult();
     },
-    onImportBackupAllowingChecksumMismatch: async () => {
+    onImportBackupAllowingChecksumMismatch: async (_masterPassword: string, _file: File, _replaceExisting?: boolean) => {
       resetDemoVaultState(state);
       notify('success', t('txt_backup_import_success_relogin'));
       return createDemoImportBackupResult();
     },
     onLoadBackupSettings: async () => state.backupSettings,
-    onSaveBackupSettings: async (settings) => {
+    onSaveBackupSettings: async (_masterPassword: string, settings) => {
       const next = cloneJson(settings);
       state.setBackupSettings(next);
       notify('success', t('txt_backup_settings_saved'));
       return next;
     },
-    onRunRemoteBackup: async (destinationId?: string | null) => {
+    onRunRemoteBackup: async (_masterPassword: string, destinationId?: string | null) => {
       notify('success', t('txt_backup_remote_run_success'));
       return createDemoBackupRun(state.backupSettings, destinationId);
     },
     onListRemoteBackups: async (destinationId: string, path: string) => createDemoRemoteBrowser(destinationId, path),
-    onDownloadRemoteBackup: async () => {
+    onDownloadRemoteBackup: async (_masterPassword: string, _destinationId: string, _path: string, _onProgress?: (percent: number | null) => void) => {
       notify('success', t('txt_demo_download_prepared'));
     },
     onInspectRemoteBackup: async (_destinationId: string, path: string) => ({
@@ -1165,13 +1199,13 @@ export function createDemoMainRoutesProps(base: AppMainRoutesProps, notify: Noti
     onDeleteRemoteBackup: async () => {
       notify('success', t('txt_backup_remote_delete_success'));
     },
-    onRestoreRemoteBackup: async (_destinationId, path) => {
+    onRestoreRemoteBackup: async (_masterPassword: string, _destinationId, path) => {
       await runDemoRemoteRestoreProgress(path.split('/').pop() || path || 'nodewarden_backup_demo.zip');
       resetDemoVaultState(state);
       notify('success', t('txt_backup_remote_restore_completed_verified'));
       return createDemoImportBackupResult();
     },
-    onRestoreRemoteBackupAllowingChecksumMismatch: async (_destinationId, path) => {
+    onRestoreRemoteBackupAllowingChecksumMismatch: async (_masterPassword: string, _destinationId, path) => {
       await runDemoRemoteRestoreProgress(path.split('/').pop() || path || 'nodewarden_backup_demo.zip');
       resetDemoVaultState(state);
       notify('success', t('txt_backup_remote_restore_completed_verified'));
